@@ -1,0 +1,10 @@
+my_test/
+MANIFEST
+.clang-format
+.vscode/
+
+__pycache__/
+*.py[cod]
+*.tmp
+
+.ipynb_checkpoints/
