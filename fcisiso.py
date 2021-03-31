@@ -206,7 +206,7 @@ class FCISISO:
         self.ci = None
         self.states = states
 
-    def kernel(self, hsoao=None, dmmo=None, amfi=True):
+    def kernel(self, hsoao=None, dmao=None, amfi=True):
         """
         State-Interaction.
 
@@ -228,8 +228,8 @@ class FCISISO:
                 Hso integral in AO basis
                 if None, it will be calculated using pyscf
 
-            dmmo : np.ndarray((n_all_orbs, n_all_orbs)) or None
-                1pdm of ground state, in MO basis
+            dmao : np.ndarray((n_all_orbs, n_all_orbs)) or None
+                1pdm of ground state, in AO basis
                 used for calculating hsoao
 
             amfi : bool
@@ -305,11 +305,9 @@ class FCISISO:
             for ici, ci in enumerate(self.ci):
                 if ci[4] < self.ci[gsci][4]:
                     gsci = ici
-            if dmmo is None:
-                dmmo = self.ff.make_rdm1(
+            if dmao is None:
+                dmao = self.ff.make_rdm1(
                     self.ci[gsci][-1], self.mol.nao, self.ci[gsci][:2])
-            mo_coeff_inv = np.linalg.inv(self.mo_coeff)
-            dmao = mo_coeff_inv.T @ dmmo @ mo_coeff_inv
             hsoao = compute_hso_ao(self.mol, dmao, amfi=amfi) * 2
         hso = np.einsum('rij,ip,jq->rpq', hsoao,
                         self.mo_coeff[:, self.ncore:self.ncore + self.norb],

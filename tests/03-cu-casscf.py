@@ -109,8 +109,8 @@ mc.kernel(mo)
 
 print(mc.nelecas, mc.e_states)
 
-dmmo = mc.make_rdm1()
-print(dmmo.shape)
+dmao = mc.make_rdm1()
+print(dmao.shape)
 
 print("\n New active orbitals:\n")
 
@@ -141,7 +141,7 @@ siso = FCISISO(mol, mc, states)
 siso.ci = ci
 siso.ncore = 9
 siso.norb = 11
-energies = siso.kernel(dmmo=dmmo, amfi=True)
+energies = siso.kernel(dmao=dmao, amfi=True)
 
 e0 = np.average(energies[0:2])
 e1 = np.average(energies[2:8])

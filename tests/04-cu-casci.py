@@ -81,7 +81,7 @@ Cu    F
 
 mol = gto.M(atom='Cu 0 0 0',
             symmetry=False,
-            basis=ano, spin=1, charge=0, verbose=3)
+            basis=ano, spin=1, charge=0, verbose=5, max_memory=150000)
 mf = scf.newton(scf.RHF(mol).sfx2c1e())
 mf.kernel()
 
@@ -98,26 +98,34 @@ for i in range(30):
         ss += "%10.6f (%s)" % (mf.mo_coeff[iv, i] ** 2, ao_lb[iv].strip())
     print(" MO %2d :: %s" % (i, ss))
 
-print("\n CASSCF(11, 11):\n")
+print("\n CASSCF(12, 11):\n")
 
-cas_list = [9, 10, 11, 12, 13, 14, 22, 23, 24, 25, 26]
-mc = mcscf.CASSCF(mf, 11, (6, 5))
-mc.fix_spin_(ss=0.75)
-mo = mcscf.sort_mo(mc, mf.mo_coeff, cas_list, base=0)
+from pyscf.mcscf import avas
+ao_labels = ['Cu 3d', 'Cu 4s']
+norb, ne_act, orbs = avas.avas(mf, ao_labels, threshold=0.001, canonicalize=True)
+print(norb, ne_act)
+
+mc = mcscf.CASSCF(mf, norb, ne_act)
 mc.state_average_((0.5, 0.1, 0.1, 0.1, 0.1, 0.1))
-mc.kernel(mo)
+mc.kernel(orbs)
+
+# cas_list = [9, 10, 11, 12, 13, 14, 22, 23, 24, 25, 26]
+# mc = mcscf.CASSCF(mf, 11, (6, 5))
+# mc.fix_spin_(ss=0.75)
+# mo = mcscf.sort_mo(mc, mf.mo_coeff, cas_list, base=0)
+# mc.state_average_((0.5, 0.1, 0.1, 0.1, 0.1, 0.1))
+# mc.kernel(mo)
 
 print(mc.nelecas, mc.e_states)
 
-dmmo = mc.make_rdm1()
-print(dmmo.shape)
+dmao = mc.make_rdm1()
 
 # (nroots, multiplicity, wfnsym)
 states = [(6, 2)]
 weights = [(0.5, 0.1, 0.1, 0.1, 0.1, 0.1)]
 mf.mo_coeff = mc.mo_coeff
-siso = FCISISO(mol, mf, states, weights, cas=(11, 11))
-siso.kernel(dmmo=dmmo, amfi=True)
+siso = FCISISO(mol, mf, states, weights, cas=(norb, ne_act))
+siso.kernel(dmao=dmao, amfi=True)
 
 e0 = np.average(siso.energies[0:2])
 e1 = np.average(siso.energies[2:8])
