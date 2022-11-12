@@ -10,11 +10,6 @@ import sys
 sys.path[:0] = [os.path.join(os.path.dirname(
     os.path.abspath(__file__)), "..")]
 
-try:
-    import block2
-except:
-    pass
-
 from pyscf import gto, scf, mcscf
 from fcisiso import FCISISO
 import numpy as np

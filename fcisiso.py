@@ -62,6 +62,8 @@ def compute_hso_ao(mol, dm0, qed_fac=1, amfi=False):
     vj, vk = get_jk_amfi(mol, dm0) if amfi else get_jk(mol, dm0)
     hso2e = vj - vk * 1.5
     hso = qed_fac * (alpha2 / 4) * (hso1e + hso2e)
+    if mol.has_ecp_soc():
+        hso -= 0.5 * mol.intor("ECPso")
     return hso * 1j
 
 
@@ -214,7 +216,7 @@ class FCISISO:
         self.ci can also be set manually before calling this method,
         to skip the FCI or CASCI step.
 
-        self.ci : list(((na, nb), 2S, 2MS, energy, ci vector))
+        self.ci : list((na, nb, 2S, 2MS, energy, ci vector))
             where :
                 na : number of alpha electrons
                 nb : number of beta electrons
