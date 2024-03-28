@@ -310,6 +310,9 @@ class FCISISO:
             if dmao is None:
                 dmao = self.ff.make_rdm1(
                     self.ci[gsci][-1], self.mol.nao, self.ci[gsci][:2])
+                if self.cas is None:
+                    # for FCI solver, transform dm1 from mo to ao
+                    dmao = self.mo_coeff @ dmao @ self.mo_coeff.T
             hsoao = compute_hso_ao(self.mol, dmao, amfi=amfi) * 2
         hso = np.einsum('rij,ip,jq->rpq', hsoao,
                         self.mo_coeff[:, self.ncore:self.ncore + self.norb],
