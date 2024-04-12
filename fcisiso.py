@@ -357,15 +357,19 @@ class FCISISO:
             shvec = []
             ess = []
             imb = 0
-            for ibra in range(len(self.states)):
-                mult = self.states[ibra][1]
-                nr = self.states[ibra][0]
-                for ir in range(nr):
-                    shvec.append(np.linalg.norm(
-                        hvec[imb + ir:imb + ir + mult * nr:nr, i]) ** 2)
-                    ess.append((self.ci[imb + ir][4], mult - 1))
-                imb += mult * nr
-            assert imb == len(heig)
+            if self.states is None:
+                shvec = np.abs(hvec[:, i] ** 2)
+                ess = [(vec[4], vec[2]) for vec in self.ci]
+            else:
+                for ibra in range(len(self.states)):
+                    mult = self.states[ibra][1]
+                    nr = self.states[ibra][0]
+                    for ir in range(nr):
+                        shvec.append(np.linalg.norm(
+                            hvec[imb + ir:imb + ir + mult * nr:nr, i]) ** 2)
+                        ess.append((self.ci[imb + ir][4], mult - 1))
+                    imb += mult * nr
+                assert imb == len(heig)
             iv = np.argmax(np.abs(shvec))
             print('  State %4d Total energy: %15.8f | largest |coeff|**2 %10.6f from I = %4d E = %15.8f S = %4.1f'
                   % (i, heig[i], shvec[iv], iv, ess[iv][0], ess[iv][1] / 2))
