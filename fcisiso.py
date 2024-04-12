@@ -17,12 +17,45 @@
 #  along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 
+# Revisions:
+#
+# Added Wigner-Eckart theorem kernel
+#     Nikolay A. Bogdanov   Apr 2024
+
 from pyscf import fci, mcscf
 from pyscf.data import nist
 import numpy as np
 import copy
-import py3nj
+from itertools import accumulate
 
+class SU2CG:
+    """Computing Clebsch-Gordan coefficients."""
+    def __init__(self, n_sqrt_fact=300):
+        self.sfs = list(accumulate([1.0] + [i ** 0.5 for i in range(1, n_sqrt_fact)], lambda x, y: x * y))
+
+    @staticmethod
+    def triangle(tja, tjb, tjc):
+        return not ((tja + tjb + tjc) & 1) and tjc <= tja + tjb and tjc >= abs(tja - tjb)
+
+    def sqrt_delta(self, tja, tjb, tjc):
+        return (self.sfs[(tja + tjb - tjc) >> 1] * self.sfs[(tja - tjb + tjc) >> 1]
+            * self.sfs[(-tja + tjb + tjc) >> 1] / self.sfs[(tja + tjb + tjc + 2) >> 1])
+
+    def wigner_3j(self, tja, tjb, tjc, tma, tmb, tmc):
+        if (tma + tmb + tmc != 0 or not SU2CG.triangle(tja, tjb, tjc) or
+            ((tja + tma) & 1) or ((tjb + tmb) & 1) or ((tjc + tmc) & 1)):
+            return 0.0
+        alpha1, alpha2 = (tjb - tjc - tma) >> 1, (tja - tjc + tmb) >> 1
+        beta1, beta2, beta3 = (tja + tjb - tjc) >> 1, (tja - tma) >> 1, (tjb + tmb) >> 1
+        return (sum((1 - ((t & 1) << 1)) / (self.sfs[t] * self.sfs[t - alpha1] * self.sfs[t - alpha2]
+            * self.sfs[beta1 - t] * self.sfs[beta2 - t] * self.sfs[beta3 - t]) ** 2
+            for t in range(max(0, max(alpha1, alpha2)), min(beta1, min(beta2, beta3)) + 1))
+            * (1 - ((tja - tjb - tmc) & 2)) * self.sqrt_delta(tja, tjb, tjc) * self.sfs[(tja + tma) >> 1]
+            * self.sfs[(tja - tma) >> 1] * self.sfs[(tjb + tmb) >> 1] * self.sfs[(tjb - tmb) >> 1]
+            * self.sfs[(tjc + tmc) >> 1] * self.sfs[(tjc - tmc) >> 1])
+
+    def clebsch_gordan(self, tja, tjb, tjc, tma, tmb, tmc):
+        return ((1 - ((tmc + tja - tjb) & 2)) * (tjc + 1) ** 0.5 * self.wigner_3j(tja, tjb, tjc, tma, tmb, -tmc))
 
 def _print_matrix(mat):
     for mm in mat:
@@ -451,6 +484,9 @@ class FCISISO:
             if dmao is None:
                 dmao = self.ff.make_rdm1(
                     self.ci[gsci][-1], self.mol.nao, self.ci[gsci][:2])
+                if self.cas is None:
+                    # for FCI solver, transform dm1 from mo to ao
+                    dmao = self.mo_coeff @ dmao @ self.mo_coeff.T
             hsoao = compute_hso_ao(self.mol, dmao, amfi=amfi) * 2
         hso = np.einsum('rij,ip,jq->rpq', hsoao,
                         self.mo_coeff[:, self.ncore:self.ncore + self.norb],
@@ -462,6 +498,7 @@ class FCISISO:
 
         # state interaction
         #
+        su2cg = SU2CG()
         ms_dim = [ci[2]+1 for ci in self.ci]
         idx_shift = [sum(ms_dim[:i]) for i in range(len(ms_dim))]
         hdiag = np.array([ci[4] for ci in self.ci for ms in range(ci[2]+1)], dtype=complex)
@@ -476,62 +513,51 @@ class FCISISO:
                     continue
                 zero_me_ij = False
                 if abs(ici[2]-jci[2]) > 2:
-                    # print("deltaS > 1")
                     zero_me_ij = True
                 elif ici[2] == jci[2] == 0:
-                    # print("Si = Sj = 0")
                     zero_me_ij = True
                 elif abs(ici[3]-jci[3]) > 2:
-                    # print("deltaSz > 1")
                     zero_me_ij = True
                 elif jci[3] == ici[3] - 2:
-                    # print("Tp1")
-                    CGcoeff = py3nj.clebsch_gordan(ici[2], 2, jci[2], ici[3], -2, jci[3])
+                    CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], ici[3], -2, jci[3])
                     if CGcoeff == 0:
-                        # print(f"CG zero {ici[2]} {ici[3]} {jci[2]} {jci[3]}")
                         zero_me_ij = True
                     else:
                         tp1 = make_trans(1, ici[-1], jci[-1],
                                          self.norb, ici[:2], jci[:2])
                         ij_red_den = tp1 / CGcoeff
                 elif jci[3] == ici[3] + 2:
-                    # print("Tm1")
-                    CGcoeff = py3nj.clebsch_gordan(ici[2], 2, jci[2], ici[3], 2, jci[3])
+                    CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], ici[3], 2, jci[3])
                     if CGcoeff == 0:
-                        # print(f"CG zero {ici[2]} {ici[3]} {jci[2]} {jci[3]}")
                         zero_me_ij = True
                     else:
                         tm1 = make_trans(-1, ici[-1], jci[-1],
                                          self.norb, ici[:2], jci[:2])
                         ij_red_den = tm1 / CGcoeff
                 elif jci[3] == ici[3]:
-                    # print("Tz")
-                    CGcoeff = py3nj.clebsch_gordan(ici[2], 2, jci[2], ici[3], 0, jci[3])
+                    CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], ici[3], 0, jci[3])
                     if CGcoeff == 0:
-                        # print(f"CG zero {ici[2]} {ici[3]} {jci[2]} {jci[3]}")
                         zero_me_ij = True
                     else:
                         tze = make_trans(0, ici[-1], jci[-1],
                                          self.norb, ici[:2], jci[:2])
                         ij_red_den = tze / CGcoeff
                 else:
-                    # print("zero")
                     zero_me_ij = True
                 for ii, i_ms2 in enumerate(range(-ici[2], ici[2] + 1, 2)):
                     for jj, j_ms2 in enumerate(range(-jci[2], jci[2] + 1, 2)):
                         if zero_me_ij or abs(i_ms2 - j_ms2) > 2 :
                             somat = 0
                         elif j_ms2 == i_ms2 - 2:
-                            CGcoeff = py3nj.clebsch_gordan(ici[2], 2, jci[2], i_ms2, -2, j_ms2)
+                            CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], i_ms2, -2, j_ms2)
                             somat = np.einsum('ij,ij->', ij_red_den, hso_pmz[0])*CGcoeff
                         elif j_ms2 == i_ms2 + 2:
-                            CGcoeff = py3nj.clebsch_gordan(ici[2], 2, jci[2], i_ms2, 2, j_ms2)
+                            CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], i_ms2, 2, j_ms2)
                             somat = np.einsum('ij,ij->', ij_red_den, hso_pmz[1])*CGcoeff
                         elif j_ms2 == i_ms2:
-                            CGcoeff = py3nj.clebsch_gordan(ici[2], 2, jci[2], i_ms2, 0, j_ms2)
+                            CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], i_ms2, 0, j_ms2)
                             somat = np.einsum('ij,ij->', ij_red_den, hso_pmz[2])*CGcoeff
                         else:
-                            # print(f"Hmm, zero {ici[2]} {i_ms2} {jci[2]} {j_ms2}")
                             somat = 0
                         hsiso[idx_shift[istate]+ii, idx_shift[jstate]+jj] = somat
                         if istate != jstate:
