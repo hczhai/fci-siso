@@ -161,6 +161,30 @@ def make_trans(m, cibra, ciket, norb, nelec_bra, nelec_ket):
                                - make_trans_rdm1('bb', cibra, ciket, norb, nelec_bra, nelec_ket)).T
 
 
+def extract_ci_list(mc, tol=1e-3):
+    from pyscf.mcscf.addons import StateAverageMixFCISolver
+    if isinstance (mc.fcisolver, StateAverageMixFCISolver):
+        solver_list = mc.fcisolver.fcisolvers
+    else:
+        solver_list = [mc.fcisolver]
+    ci_list = []
+    cum_root = 0
+    for i_solver in solver_list:
+        nstates = i_solver.nstates
+        na, nb = i_solver.nelec
+        for j_root in range(nstates):
+            (j_s_square, j_mult) = i_solver.spin_square(mc.ci[cum_root + j_root],
+                                                        i_solver.norb, i_solver.nelec)
+            j_2s = round(j_mult - 1)
+            if abs(np.rint(j_s_square)-j_s_square) > tol:
+                print(f"spin contamination S~{j_2s/2}, S^2={j_s_square} "
+                      + f"for root {cum_root + j_root}")
+            ci_list.append((na, nb, j_2s, na-nb, mc.e_states[cum_root + j_root],
+                            mc.ci[cum_root + j_root]))
+        cum_root += nstates
+    return ci_list
+
+
 class FCISISO:
     """
     FCI state-interaction for spin-orbit coupling.
