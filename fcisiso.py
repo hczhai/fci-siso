@@ -99,8 +99,10 @@ def make_trans_rdm1(dspin, cibra, ciket, norb, nelec_bra, nelec_ket):
         cond = nelabra == nelaket - 1 and nelbbra == nelbket + 1
     elif dspin == 'ab':
         cond = nelabra == nelaket + 1 and nelbbra == nelbket - 1
+    elif dspin == 'aa':
+        cond = nelabra == nelaket and nelbbra == nelbket and nelabra > 0
     else:
-        cond = nelabra == nelaket and nelbbra == nelbket
+        cond = nelabra == nelaket and nelbbra == nelbket and nelbbra > 0
     if not cond:
         return np.array(0)
     nabra = fci.cistring.num_strings(norb, nelabra)
