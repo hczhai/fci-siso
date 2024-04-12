@@ -64,3 +64,8 @@ energies = siso.kernel(dmao=dmao, amfi=True)
 
 print(energies)
 print("For time being only one Ms component per state is interacting")
+
+energies = siso.kernel_we(dmao=dmao, amfi=True)
+
+print(energies)
+print("With Wigner-Eckart theorem one Ms component per state is enough to compute all couplings")
