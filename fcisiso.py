@@ -17,11 +17,45 @@
 #  along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 
+# Revisions:
+#
+# Added Wigner-Eckart theorem kernel
+#     Nikolay A. Bogdanov   Apr 2024
+
 from pyscf import fci, mcscf
 from pyscf.data import nist
 import numpy as np
 import copy
+from itertools import accumulate
 
+class SU2CG:
+    """Computing Clebsch-Gordan coefficients."""
+    def __init__(self, n_sqrt_fact=300):
+        self.sfs = list(accumulate([1.0] + [i ** 0.5 for i in range(1, n_sqrt_fact)], lambda x, y: x * y))
+
+    @staticmethod
+    def triangle(tja, tjb, tjc):
+        return not ((tja + tjb + tjc) & 1) and tjc <= tja + tjb and tjc >= abs(tja - tjb)
+
+    def sqrt_delta(self, tja, tjb, tjc):
+        return (self.sfs[(tja + tjb - tjc) >> 1] * self.sfs[(tja - tjb + tjc) >> 1]
+            * self.sfs[(-tja + tjb + tjc) >> 1] / self.sfs[(tja + tjb + tjc + 2) >> 1])
+
+    def wigner_3j(self, tja, tjb, tjc, tma, tmb, tmc):
+        if (tma + tmb + tmc != 0 or not SU2CG.triangle(tja, tjb, tjc) or
+            ((tja + tma) & 1) or ((tjb + tmb) & 1) or ((tjc + tmc) & 1)):
+            return 0.0
+        alpha1, alpha2 = (tjb - tjc - tma) >> 1, (tja - tjc + tmb) >> 1
+        beta1, beta2, beta3 = (tja + tjb - tjc) >> 1, (tja - tma) >> 1, (tjb + tmb) >> 1
+        return (sum((1 - ((t & 1) << 1)) / (self.sfs[t] * self.sfs[t - alpha1] * self.sfs[t - alpha2]
+            * self.sfs[beta1 - t] * self.sfs[beta2 - t] * self.sfs[beta3 - t]) ** 2
+            for t in range(max(0, max(alpha1, alpha2)), min(beta1, min(beta2, beta3)) + 1))
+            * (1 - ((tja - tjb - tmc) & 2)) * self.sqrt_delta(tja, tjb, tjc) * self.sfs[(tja + tma) >> 1]
+            * self.sfs[(tja - tma) >> 1] * self.sfs[(tjb + tmb) >> 1] * self.sfs[(tjb - tmb) >> 1]
+            * self.sfs[(tjc + tmc) >> 1] * self.sfs[(tjc - tmc) >> 1])
+
+    def clebsch_gordan(self, tja, tjb, tjc, tma, tmb, tmc):
+        return ((1 - ((tmc + tja - tjb) & 2)) * (tjc + 1) ** 0.5 * self.wigner_3j(tja, tjb, tjc, tma, tmb, -tmc))
 
 def _print_matrix(mat):
     for mm in mat:
@@ -99,8 +133,10 @@ def make_trans_rdm1(dspin, cibra, ciket, norb, nelec_bra, nelec_ket):
         cond = nelabra == nelaket - 1 and nelbbra == nelbket + 1
     elif dspin == 'ab':
         cond = nelabra == nelaket + 1 and nelbbra == nelbket - 1
+    elif dspin == 'aa':
+        cond = nelabra == nelaket and nelbbra == nelbket and nelabra > 0
     else:
-        cond = nelabra == nelaket and nelbbra == nelbket
+        cond = nelabra == nelaket and nelbbra == nelbket and nelbbra > 0
     if not cond:
         return np.array(0)
     nabra = fci.cistring.num_strings(norb, nelabra)
@@ -159,6 +195,30 @@ def make_trans(m, cibra, ciket, norb, nelec_bra, nelec_ket):
     else:
         return np.sqrt(0.5) * (make_trans_rdm1('aa', cibra, ciket, norb, nelec_bra, nelec_ket)
                                - make_trans_rdm1('bb', cibra, ciket, norb, nelec_bra, nelec_ket)).T
+
+
+def extract_ci_list(mc, tol=1e-3):
+    from pyscf.mcscf.addons import StateAverageMixFCISolver
+    if isinstance (mc.fcisolver, StateAverageMixFCISolver):
+        solver_list = mc.fcisolver.fcisolvers
+    else:
+        solver_list = [mc.fcisolver]
+    ci_list = []
+    cum_root = 0
+    for i_solver in solver_list:
+        nstates = i_solver.nstates
+        na, nb = i_solver.nelec
+        for j_root in range(nstates):
+            (j_s_square, j_mult) = i_solver.spin_square(mc.ci[cum_root + j_root],
+                                                        i_solver.norb, i_solver.nelec)
+            j_2s = round(j_mult - 1)
+            if abs(np.rint(j_s_square)-j_s_square) > tol:
+                print(f"spin contamination S~{j_2s/2}, S^2={j_s_square} "
+                      + f"for root {cum_root + j_root}")
+            ci_list.append((na, nb, j_2s, na-nb, mc.e_states[cum_root + j_root],
+                            mc.ci[cum_root + j_root]))
+        cum_root += nstates
+    return ci_list
 
 
 class FCISISO:
@@ -357,17 +417,172 @@ class FCISISO:
             shvec = []
             ess = []
             imb = 0
-            for ibra in range(len(self.states)):
-                mult = self.states[ibra][1]
-                nr = self.states[ibra][0]
-                for ir in range(nr):
-                    shvec.append(np.linalg.norm(
-                        hvec[imb + ir:imb + ir + mult * nr:nr, i]) ** 2)
-                    ess.append((self.ci[imb + ir][4], mult - 1))
-                imb += mult * nr
-            assert imb == len(heig)
+            if self.states is None:
+                shvec = np.abs(hvec[:, i] ** 2)
+                ess = [(vec[4], vec[2]) for vec in self.ci]
+            else:
+                for ibra in range(len(self.states)):
+                    mult = self.states[ibra][1]
+                    nr = self.states[ibra][0]
+                    for ir in range(nr):
+                        shvec.append(np.linalg.norm(
+                            hvec[imb + ir:imb + ir + mult * nr:nr, i]) ** 2)
+                        ess.append((self.ci[imb + ir][4], mult - 1))
+                    imb += mult * nr
+                assert imb == len(heig)
             iv = np.argmax(np.abs(shvec))
             print('  State %4d Total energy: %15.8f | largest |coeff|**2 %10.6f from I = %4d E = %15.8f S = %4.1f'
                   % (i, heig[i], shvec[iv], iv, ess[iv][0], ess[iv][1] / 2))
+        self.energies = heig
+        return heig
+
+    def kernel_we(self, hsoao=None, dmao=None, amfi=True):
+        """
+        State-Interaction using Wigner-Eckart theorem.
+
+        If self.ci is None, the states will be calculated using FCI or CASCI
+        self.ci can also be set manually before calling this method,
+        to skip the FCI or CASCI step.
+
+        self.ci : list((na, nb, 2S, 2MS, energy, ci vector))
+            where :
+                na : number of alpha electrons
+                nb : number of beta electrons
+                2S : 2 times total spin
+                2MS : 2 times projected spin
+                ci vector : 2-dim np.array with shape
+                    (n_det_alpha, n_det_beta)
+
+        Args:
+            hsoao : np.ndarray((3, nao, nao)) or None
+                Hso integral in AO basis
+                if None, it will be calculated using pyscf
+
+            dmao : np.ndarray((n_all_orbs, n_all_orbs)) or None
+                1pdm of ground state, in AO basis
+                used for calculating hsoao
+
+            amfi : bool
+                whether amfi should be used for calculating hsoao
+                for large number of atoms, using amfi can significantly
+                save hsoao computing time
+                if amfi == False, a full
+                np.ndarray((3, nao, nao, nao, nao)) is generated as
+                an intermediate.
+
+        Returns:
+            list(float) : Energy eigenstates with SOC
+        """
+        if self.ci is None or len(self.ci) == 0:
+            raise NotImplementedError
+        if hsoao is None:
+            print('\nGenerating Spin-Orbit Integrals:\n')
+            gsci = 0
+            for ici, ci in enumerate(self.ci):
+                if ci[4] < self.ci[gsci][4]:
+                    gsci = ici
+            if dmao is None:
+                dmao = self.ff.make_rdm1(
+                    self.ci[gsci][-1], self.mol.nao, self.ci[gsci][:2])
+                if self.cas is None:
+                    # for FCI solver, transform dm1 from mo to ao
+                    dmao = self.mo_coeff @ dmao @ self.mo_coeff.T
+            hsoao = compute_hso_ao(self.mol, dmao, amfi=amfi) * 2
+        hso = np.einsum('rij,ip,jq->rpq', hsoao,
+                        self.mo_coeff[:, self.ncore:self.ncore + self.norb],
+                        self.mo_coeff[:, self.ncore:self.ncore + self.norb])
+        hso_pmz = np.zeros_like(hso)
+        hso_pmz[0] = (1j*hso[1] - hso[0])/2
+        hso_pmz[1] = (1j*hso[1] + hso[0])/2
+        hso_pmz[2] = hso[2]*np.sqrt(0.5)
+
+        # state interaction
+        #
+        su2cg = SU2CG()
+        ms_dim = [ci[2]+1 for ci in self.ci]
+        idx_shift = [sum(ms_dim[:i]) for i in range(len(ms_dim))]
+        hdiag = np.array([ci[4] for ci in self.ci for ms in range(ci[2]+1)], dtype=complex)
+        hsiso = np.zeros((hdiag.shape[0], hdiag.shape[0]), dtype=complex)
+        thrds = 29.0  # cm-1
+        au2cm = nist.HARTREE2J / nist.PLANCK / nist.LIGHT_SPEED_SI * 1e-2
+        print("\nComplex SO-Hamiltonian matrix elements over spin components of spin-free eigenstates:")
+        print("(In cm-1. Print threshold:%10.3f cm-1)\n" % thrds)
+        for istate, ici in enumerate(self.ci):
+            for jstate, jci in enumerate(self.ci):
+                if jstate < istate:
+                    continue
+                zero_me_ij = False
+                if abs(ici[2]-jci[2]) > 2:
+                    zero_me_ij = True
+                elif ici[2] == jci[2] == 0:
+                    zero_me_ij = True
+                elif abs(ici[3]-jci[3]) > 2:
+                    zero_me_ij = True
+                elif jci[3] == ici[3] - 2:
+                    CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], ici[3], -2, jci[3])
+                    if CGcoeff == 0:
+                        zero_me_ij = True
+                    else:
+                        tp1 = make_trans(1, ici[-1], jci[-1],
+                                         self.norb, ici[:2], jci[:2])
+                        ij_red_den = tp1 / CGcoeff
+                elif jci[3] == ici[3] + 2:
+                    CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], ici[3], 2, jci[3])
+                    if CGcoeff == 0:
+                        zero_me_ij = True
+                    else:
+                        tm1 = make_trans(-1, ici[-1], jci[-1],
+                                         self.norb, ici[:2], jci[:2])
+                        ij_red_den = tm1 / CGcoeff
+                elif jci[3] == ici[3]:
+                    CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], ici[3], 0, jci[3])
+                    if CGcoeff == 0:
+                        zero_me_ij = True
+                    else:
+                        tze = make_trans(0, ici[-1], jci[-1],
+                                         self.norb, ici[:2], jci[:2])
+                        ij_red_den = tze / CGcoeff
+                else:
+                    zero_me_ij = True
+                for ii, i_ms2 in enumerate(range(-ici[2], ici[2] + 1, 2)):
+                    for jj, j_ms2 in enumerate(range(-jci[2], jci[2] + 1, 2)):
+                        if zero_me_ij or abs(i_ms2 - j_ms2) > 2 :
+                            somat = 0
+                        elif j_ms2 == i_ms2 - 2:
+                            CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], i_ms2, -2, j_ms2)
+                            somat = np.einsum('ij,ij->', ij_red_den, hso_pmz[0])*CGcoeff
+                        elif j_ms2 == i_ms2 + 2:
+                            CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], i_ms2, 2, j_ms2)
+                            somat = np.einsum('ij,ij->', ij_red_den, hso_pmz[1])*CGcoeff
+                        elif j_ms2 == i_ms2:
+                            CGcoeff = su2cg.clebsch_gordan(ici[2], 2, jci[2], i_ms2, 0, j_ms2)
+                            somat = np.einsum('ij,ij->', ij_red_den, hso_pmz[2])*CGcoeff
+                        else:
+                            somat = 0
+                        hsiso[idx_shift[istate]+ii, idx_shift[jstate]+jj] = somat
+                        if istate != jstate:
+                            hsiso[idx_shift[jstate]+jj, idx_shift[istate]+ii] = np.conj(somat)
+                        somat *= au2cm
+                        if abs(somat) > thrds:
+                            print(('<%4d|H_SO|%4d> I1 = %4d (E1 = %15.8f) S1 = %4.1f MS1 = %4.1f '
+                                   + 'I2 = %4d (E2 = %15.8f) S2 = %4.1f MS2 = %4.1f '
+                                   + 'Re = %9.3f Im = %9.3f')
+                                  % (idx_shift[istate]+ii, idx_shift[jstate]+jj,
+                                     istate, ici[4], ici[2] / 2, i_ms2 / 2,
+                                     jstate, jci[4], jci[2] / 2, j_ms2 / 2,
+                                     somat.real, somat.imag))
+        # Full SISO Hamiltonian eigen states
+        hfull = hsiso + np.diag(hdiag)
+        heig, hvec = np.linalg.eigh(hfull)
+        print('\nTotal energies including SO-coupling:\n')
+        for i in range(len(heig)):
+            sf_proj_vec = []
+            for ibra, mult in enumerate(ms_dim):
+                sf_proj_vec.append(np.linalg.norm(
+                    hvec[idx_shift[ibra]:idx_shift[ibra] + mult, i]) ** 2)
+            iv = np.argmax(np.abs(sf_proj_vec))
+            print(('  State %4d Total energy: %15.8f | largest |proj_norm|**2 % 6.4f '
+                   + 'from I = %4d E = %15.8f S = %4.1f')
+                  % (i, heig[i], sf_proj_vec[iv], iv, self.ci[iv][4], self.ci[iv][2] / 2))
         self.energies = heig
         return heig
